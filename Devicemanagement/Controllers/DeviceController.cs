@@ -197,7 +197,6 @@ public class DeviceController : ControllerBase
             });
             await _context.SaveChangesAsync();
 
-
             return Ok(new { message = $"Device with ID {id} updated successfully." });
         }
         catch (Exception ex)
@@ -239,7 +238,6 @@ public class DeviceController : ControllerBase
         }
     }
 
-    // PUT: api/Device/restore/{id}  --> RESTORE
     // PUT: api/Device/restore/{id}  --> RESTORE or UNDO
     [HttpPut("restore/{id}")]
     [Authorize(Roles = "Admin,User")] // Allow both Admin and User

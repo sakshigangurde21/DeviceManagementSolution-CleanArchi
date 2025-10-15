@@ -161,7 +161,13 @@ namespace Devicemanagement.Controllers
                 new Claim(ClaimTypes.Role, user.Role)
             };
 
-            var token = new JwtSecurityToken(claims: claims, expires: DateTime.UtcNow.AddMinutes(minutesValid), signingCredentials: creds);
+            var token = new JwtSecurityToken(
+                issuer: _config["JWT:ValidIssuer"],       // <-- Add this
+                audience: _config["JWT:ValidAudience"],   // <-- Add this
+                claims: claims,
+                expires: DateTime.UtcNow.AddMinutes(minutesValid),
+                signingCredentials: creds
+            );
             return new JwtSecurityTokenHandler().WriteToken(token);
         }
     }
