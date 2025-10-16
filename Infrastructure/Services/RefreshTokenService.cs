@@ -24,7 +24,7 @@ namespace Infrastructure.Services
                 .FirstOrDefaultAsync(r => r.Token == token);
         }
 
-        public async Task<RefreshToken> CreateAsync(int userId, string? ipAddress)
+        public async Task<RefreshToken> CreateAsync(int userId)
         {
             var randomBytes = new byte[64];
             using var rng = RandomNumberGenerator.Create();
@@ -35,7 +35,6 @@ namespace Infrastructure.Services
                 Token = Convert.ToBase64String(randomBytes),
                 Expires = DateTime.UtcNow.AddDays(7),
                 Created = DateTime.UtcNow,
-                CreatedByIp = ipAddress,
                 UserId = userId
             };
 
@@ -45,21 +44,18 @@ namespace Infrastructure.Services
             return refreshToken;
         }
 
-        public async Task RevokeAsync(RefreshToken token, string? revokedByIp, string? replacedByToken = null)
+        public async Task RevokeAsync(RefreshToken token)
         {
             token.Revoked = DateTime.UtcNow;
-            token.RevokedByIp = revokedByIp;
-            token.ReplacedByToken = replacedByToken;
-
             await _context.SaveChangesAsync();
         }
 
-        public async Task RevokeByTokenAsync(string token, string? revokedByIp)
+        public async Task RevokeByTokenAsync(string token)
         {
             var existing = await GetByTokenAsync(token);
             if (existing == null) return;
 
-            await RevokeAsync(existing, revokedByIp);
+            await RevokeAsync(existing);
         }
     }
 }

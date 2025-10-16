@@ -71,7 +71,7 @@ namespace Devicemanagement.Controllers
 
             var accessToken = GenerateJwtToken(user, 15);
 
-            var refreshToken = await _refreshTokenService.CreateAsync(user.Id, Request.HttpContext.Connection.RemoteIpAddress?.ToString());
+            var refreshToken = await _refreshTokenService.CreateAsync(user.Id);
 
             Response.Cookies.Append("jwt", accessToken, new CookieOptions
             {
@@ -102,8 +102,10 @@ namespace Devicemanagement.Controllers
             if (existing == null || !existing.IsActive)
                 return Unauthorized(new { message = "Invalid or expired refresh token" });
 
-            var newRefresh = await _refreshTokenService.CreateAsync(existing.UserId, Request.HttpContext.Connection.RemoteIpAddress?.ToString());
-            await _refreshTokenService.RevokeAsync(existing, Request.HttpContext.Connection.RemoteIpAddress?.ToString(), newRefresh.Token);
+            // Create new refresh token
+            var newRefresh = await _refreshTokenService.CreateAsync(existing.UserId);
+            // Revoke old token
+            await _refreshTokenService.RevokeAsync(existing);
 
             var accessToken = GenerateJwtToken(existing.User!, 15);
 
@@ -141,7 +143,7 @@ namespace Devicemanagement.Controllers
         public async Task<IActionResult> Logout()
         {
             if (Request.Cookies.TryGetValue("refreshToken", out var token))
-                await _refreshTokenService.RevokeByTokenAsync(token, Request.HttpContext.Connection.RemoteIpAddress?.ToString());
+                await _refreshTokenService.RevokeByTokenAsync(token);
 
             Response.Cookies.Delete("refreshToken", new CookieOptions { HttpOnly = true, Secure = true, SameSite = SameSiteMode.None });
             Response.Cookies.Delete("jwt", new CookieOptions { HttpOnly = true, Secure = true, SameSite = SameSiteMode.None });

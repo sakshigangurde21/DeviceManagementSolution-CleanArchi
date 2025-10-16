@@ -38,7 +38,6 @@ builder.Services.AddAuthentication(options =>
         RoleClaimType = ClaimTypes.Role
     };
 
-
     // For WebSocket (SignalR)
     options.Events = new JwtBearerEvents
     {

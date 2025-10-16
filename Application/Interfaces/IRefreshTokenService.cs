@@ -6,9 +6,8 @@ namespace Application.Interfaces
     public interface IRefreshTokenService
     {
         Task<RefreshToken?> GetByTokenAsync(string token);
-        Task<RefreshToken> CreateAsync(int userId, string? ipAddress);
-        Task RevokeAsync(RefreshToken token, string? revokedByIp, string? replacedByToken = null);
-        Task RevokeByTokenAsync(string token, string? revokedByIp);
-
+        Task<RefreshToken> CreateAsync(int userId);
+        Task RevokeAsync(RefreshToken token);
+        Task RevokeByTokenAsync(string token);
     }
 }
