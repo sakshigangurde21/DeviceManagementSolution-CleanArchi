@@ -14,6 +14,5 @@ namespace DeviceManagementSolution.Domain.Entities
 
         [BindNever] // this will store which user added the device
         public string UserId { get; set; } = string.Empty;
-
     }
 }

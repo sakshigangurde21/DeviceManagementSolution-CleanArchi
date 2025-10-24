@@ -23,6 +23,11 @@ namespace Infrastructure.Services
             return _context.Devices.Where(d => !d.IsDeleted).ToList();
         }
 
+        public List<Device> GetAllDevicesIncludingDeleted()
+        {
+            return _context.Devices.IgnoreQueryFilters().ToList();
+        }
+
         // Get only soft-deleted devices
         public List<Device> GetDeletedDevices()
         {

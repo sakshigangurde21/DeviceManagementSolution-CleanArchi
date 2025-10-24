@@ -23,7 +23,6 @@ namespace Devicemanagement.Controllers
         private readonly IRefreshTokenService _refreshTokenService;
         private readonly INotificationService _notificationService;
 
-
         public AuthController(DeviceDbContext context, IConfiguration config, IUserService userService,
  IRefreshTokenService refreshTokenService, INotificationService notificationService)
         {
@@ -164,8 +163,8 @@ namespace Devicemanagement.Controllers
             };
 
             var token = new JwtSecurityToken(
-                issuer: _config["JWT:ValidIssuer"],       // <-- Add this
-                audience: _config["JWT:ValidAudience"],   // <-- Add this
+                issuer: _config["JWT:ValidIssuer"],       
+                audience: _config["JWT:ValidAudience"],   
                 claims: claims,
                 expires: DateTime.UtcNow.AddMinutes(minutesValid),
                 signingCredentials: creds

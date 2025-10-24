@@ -3,6 +3,7 @@ using Application.Interfaces;
 using DeviceManagementSolution.Domain.Entities;
 using Infrastructure.Data;
 using Infrastructure.Hubs;
+using Infrastructure.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
@@ -11,7 +12,7 @@ using Microsoft.Extensions.Logging;
 using System;
 using System.IdentityModel.Tokens.Jwt;
 using System.Linq;
-using System.Security.Claims; // make sure this is added
+using System.Security.Claims; 
 using System.Threading.Tasks;
 
 [Authorize] // Require authentication for all endpoints by default
@@ -25,20 +26,29 @@ public class DeviceController : ControllerBase
     private readonly ILogger<DeviceController> _logger;
     private readonly DeviceDbContext _context;
     private readonly INotificationService _notificationService;
+    private readonly IQueueService _queueService;
 
-    public DeviceController(IDeviceService deviceService, IHubContext<DeviceHub> hubContext, ILogger<DeviceController> logger, DeviceDbContext context, INotificationService notificationService)
+
+    public DeviceController(IDeviceService deviceService, IHubContext<DeviceHub> hubContext, ILogger<DeviceController> logger, DeviceDbContext context, INotificationService notificationService, IQueueService queueService)
     {
         _deviceService = deviceService;
         _hubContext = hubContext;
         _logger = logger;
         _context = context;
         _notificationService = notificationService;
+        _queueService = queueService;
+
     }
 
-    // GET: api/Device?deleted=false
+
+    // GET: api/Device
     [HttpGet]
-    [Authorize(Roles = "Admin,User")] // Both can view devices
-    public IActionResult GetAll([FromQuery] bool deleted = false)
+    [Authorize(Roles = "Admin,User")]
+    public IActionResult GetAll([FromQuery] bool deleted = false,
+                                [FromQuery] string? searchDescription = null,
+                                [FromQuery] string? searchUsername = null,
+                                [FromQuery] string? createdByUserId = null,
+                                [FromQuery] string? sortBy = null)
     {
         try
         {
@@ -48,24 +58,51 @@ public class DeviceController : ControllerBase
             if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(role))
                 return Unauthorized(new { message = "Invalid token: UserId or Role missing" });
 
-            IEnumerable<Device> devices;
+            // Base query
+            var devicesQuery = deleted
+                ? _context.Devices.IgnoreQueryFilters().Where(d => d.IsDeleted)
+                : _context.Devices.Where(d => !d.IsDeleted);
+            // Filter deleted
+            devicesQuery = deleted ? devicesQuery.Where(d => d.IsDeleted) : devicesQuery.Where(d => !d.IsDeleted);
 
-            if (deleted)
-            {
-                // Admin sees all deleted devices, users see only their own
-                devices = role == "Admin"
-                    ? _deviceService.GetDeletedDevices()
-                    : _deviceService.GetDeletedDevices().Where(d => d.UserId == userId);
-            }
-            else
-            {
-                // Admin sees all active devices, users see only their own
-                devices = role == "Admin"
-                    ? _deviceService.GetAllDevices()
-                    : _deviceService.GetAllDevices().Where(d => d.UserId == userId);
-            }
+            // Non-admin users see only their devices
+            if (role != "Admin")
+                devicesQuery = devicesQuery.Where(d => d.UserId == userId);
 
-            return Ok(devices);
+            // Filters
+            if (!string.IsNullOrEmpty(searchDescription))
+                devicesQuery = devicesQuery.Where(d => d.Description.Contains(searchDescription));
+
+            if (!string.IsNullOrEmpty(createdByUserId))
+                devicesQuery = devicesQuery.Where(d => d.UserId == createdByUserId);
+
+            // Join with users to get username for filtering/sorting
+            var result = from d in devicesQuery
+                         join u in _context.Users on d.UserId equals u.Id.ToString() into userJoin
+                         from user in userJoin.DefaultIfEmpty()
+                         select new
+                         {
+                             d.Id,
+                             d.DeviceName,
+                             d.Description,
+                             d.UserId,
+                             CreatedBy = user != null ? user.Username : "Unknown",
+                             d.IsDeleted
+                         };
+
+            // Filter by username
+            if (!string.IsNullOrEmpty(searchUsername))
+                result = result.Where(r => r.CreatedBy.Contains(searchUsername));
+
+            // Sorting
+            result = sortBy switch
+            {
+                "usernameAsc" => result.OrderBy(r => r.CreatedBy),
+                "usernameDesc" => result.OrderByDescending(r => r.CreatedBy),
+                _ => result.OrderBy(r => r.DeviceName)
+            };
+
+            return Ok(result.ToList());
         }
         catch (Exception ex)
         {
@@ -73,7 +110,6 @@ public class DeviceController : ControllerBase
             return StatusCode(500, new { message = "Unexpected error while fetching devices." });
         }
     }
-
 
     // GET: api/Device/{id}
     [HttpGet("{id}")]
@@ -95,26 +131,21 @@ public class DeviceController : ControllerBase
         }
     }
 
-    // POST: api/Device
     [HttpPost]
-    [Authorize(Roles = "Admin, User")]
+    [Authorize(Roles = "Admin,User")]
     public async Task<IActionResult> Create([FromBody] CreateDeviceDto dto)
     {
         try
         {
-            if (!ModelState.IsValid)
-                return BadRequest(ModelState);
+            if (!ModelState.IsValid) return BadRequest(ModelState);
 
-            string trimmedName = dto.DeviceName?.Trim() ?? "";
+            var trimmedName = dto.DeviceName?.Trim() ?? "";
 
-            var allDevices = _deviceService.GetAllDevices();
+            var allDevices = _deviceService.GetAllDevicesIncludingDeleted();
             if (allDevices.Any(d => d.DeviceName.Trim().ToLower() == trimmedName.ToLower()))
-                return BadRequest(new { message = "Device with this name already exists." });
+                return BadRequest(new { message = "Device name already exists" });
 
-            var userId = User.FindFirst("UserId")?.Value ?? ""; // JWT "sub" claim usually holds user ID
-
-            var username = User.Identity?.Name;
-            Console.WriteLine($"Added by: {username}"); // will now print actual username
+            var userId = User.FindFirst("UserId")?.Value ?? "";
 
             var device = new Device
             {
@@ -123,49 +154,60 @@ public class DeviceController : ControllerBase
                     ? "No description"
                     : dto.Description.Trim(),
                 UserId = userId
-
             };
 
             bool success = _deviceService.CreateDevice(device);
-            if (!success)
-                return StatusCode(500, new { message = "Failed to create device." });
+            if (!success) return StatusCode(500, new { message = "Failed to create device" });
 
             await _hubContext.Clients.All.SendAsync("DeviceAdded", new
             {
                 DeviceId = device.Id,
                 DeviceName = device.DeviceName,
-                AddedBy = User.Identity.Name,  // or your username claim
+                AddedBy = User.Identity?.Name,
                 UserId = device.UserId
             });
 
+            // ✅ Create notification for this user
+            var notification = new Notification { Message = $"Added device \"{device.DeviceName}\"" };
+            _context.Notifications.Add(notification);
+            await _context.SaveChangesAsync();
 
-            // Store notification
-            await _notificationService.CreateNotificationAsync(userId, $"Added device \"{device.DeviceName}\"");
+            _context.UserNotifications.Add(new UserNotification
+            {
+                UserId = userId,
+                NotificationId = notification.Id
+            });
+            await _context.SaveChangesAsync();
+
+            await _hubContext.Clients.User(userId).SendAsync("NewNotification", new
+            {
+                notification.Id,
+                notification.Message,
+                notification.CreatedAt
+            });
 
             return CreatedAtAction(nameof(GetById), new { id = device.Id }, device);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error while creating device");
-            return StatusCode(500, new { message = "Unexpected error while creating device." });
+            _logger.LogError(ex, "Error creating device");
+            return StatusCode(500, new { message = "Unexpected error" });
         }
     }
 
-    // PUT: api/Device/{id}
     [HttpPut("{id}")]
     [Authorize(Roles = "Admin,User")]
     public async Task<IActionResult> Update(int id, [FromBody] UpdateDeviceDto dto)
     {
         try
         {
-            if (!ModelState.IsValid)
-                return BadRequest(ModelState);
+            if (!ModelState.IsValid) return BadRequest(ModelState);
 
-            string trimmedName = dto.DeviceName?.Trim() ?? "";
+            var trimmedName = dto.DeviceName?.Trim() ?? "";
 
             var allDevices = _deviceService.GetAllDevices();
             if (allDevices.Any(d => d.DeviceName.Trim().ToLower() == trimmedName.ToLower() && d.Id != id))
-                return BadRequest(new { message = "Device with this name already exists." });
+                return BadRequest(new { message = "Device name already exists" });
 
             var userId = User.FindFirst("UserId")?.Value ?? "";
 
@@ -179,68 +221,84 @@ public class DeviceController : ControllerBase
             };
 
             bool success = _deviceService.UpdateDevice(device);
-            if (!success)
-                return NotFound(new { message = $"Device with ID {id} not found." });
+            if (!success) return NotFound(new { message = $"Device {id} not found" });
 
             await _hubContext.Clients.All.SendAsync("DeviceUpdated", new
             {
                 DeviceId = device.Id,
                 DeviceName = device.DeviceName,
-                UpdatedBy = User.Identity.Name,
+                UpdatedBy = User.Identity?.Name,
                 UserId = device.UserId
             });
 
-            _context.Notifications.Add(new Notification
+            // Notification
+            var notification = new Notification { Message = $"{User.Identity?.Name} updated device \"{device.DeviceName}\"" };
+            _context.Notifications.Add(notification);
+            await _context.SaveChangesAsync();
+
+            _context.UserNotifications.Add(new UserNotification
             {
                 UserId = userId,
-                Message = $"{User.Identity?.Name} updated device \"{device.DeviceName}\""
+                NotificationId = notification.Id
             });
             await _context.SaveChangesAsync();
 
-            return Ok(new { message = $"Device with ID {id} updated successfully." });
+            await _hubContext.Clients.User(userId).SendAsync("NewNotification", new
+            {
+                notification.Id,
+                notification.Message,
+                notification.CreatedAt
+            });
+
+            return Ok(new { message = $"Device {id} updated successfully" });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error while updating device");
-            return StatusCode(500, new { message = "Unexpected error while updating device." });
+            _logger.LogError(ex, "Error updating device");
+            return StatusCode(500, new { message = "Unexpected error" });
         }
     }
 
-    // DELETE: api/Device/{id}   --> SOFT DELETE
     [HttpDelete("{id}")]
-    [Authorize(Roles = "Admin")] // Only Admin can delete
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Delete(int id)
     {
         try
         {
             bool success = _deviceService.SoftDeleteDevice(id);
-            if (!success)
-                return NotFound(new { message = $"Device with ID {id} not found." });
+            if (!success) return NotFound(new { message = $"Device {id} not found" });
 
             await _hubContext.Clients.All.SendAsync("DeviceDeleted", new
             {
                 DeviceId = id,
-                Message = "Device deleted successfully"
+                Message = "Device deleted"
             });
 
-            _context.Notifications.Add(new Notification
+            var notification = new Notification { Message = $"{User.Identity?.Name} deleted device {id}" };
+            _context.Notifications.Add(notification);
+            await _context.SaveChangesAsync();
+
+            _context.UserNotifications.Add(new UserNotification
             {
-                Message = $"{User.Identity?.Name} deleted device with ID {id}"
+                UserId = User.FindFirst("UserId")?.Value ?? "",
+                NotificationId = notification.Id
             });
             await _context.SaveChangesAsync();
 
-            return Ok(new { message = $"Device with ID {id} deleted successfully." });
+            return Ok(new { message = $"Device {id} deleted successfully" });
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error while deleting device");
-            return StatusCode(500, new { message = "Unexpected error while deleting device." });
+            _logger.LogError(ex, "Error deleting device");
+            return StatusCode(500, new { message = "Unexpected error" });
         }
     }
 
+
+    // PUT: api/Device/restore/{id}  --> RESTORE or UNDO
     // PUT: api/Device/restore/{id}  --> RESTORE or UNDO
     [HttpPut("restore/{id}")]
-    [Authorize(Roles = "Admin,User")] // Allow both Admin and User
+    [Authorize(Roles = "Admin,User")]
     public async Task<IActionResult> RestoreDevice(int id)
     {
         try
@@ -263,12 +321,9 @@ public class DeviceController : ControllerBase
                 Message = $"Device \"{device.DeviceName}\" restored successfully."
             });
 
-            _context.Notifications.Add(new Notification
-            {
-                Message = $"{User.Identity?.Name} restored device \"{device.DeviceName}\"",
-                UserId = device.UserId
-            });
-            await _context.SaveChangesAsync();
+            // Use NotificationService for per-user notification
+            await _notificationService.CreateNotificationAsync(device.UserId,
+                $"{User.Identity?.Name} restored device \"{device.DeviceName}\"");
 
             return Ok(new { message = $"Device with ID {id} restored successfully." });
         }
@@ -278,7 +333,6 @@ public class DeviceController : ControllerBase
             return StatusCode(500, new { message = "Unexpected error while restoring device." });
         }
     }
-
 
     // PUT: api/Device/restoreAll  --> RESTORE ALL
     [HttpPut("restoreAll")]
@@ -324,12 +378,16 @@ public class DeviceController : ControllerBase
         }
     }
     // GET: api/Device/paged?pageNumber=1&pageSize=10
+    // GET paged: api/Device/paged?pageNumber=1&pageSize=5
     [HttpGet("paged")]
     [Authorize(Roles = "Admin,User")]
-    public IActionResult GetPaged(
-        [FromQuery] int pageNumber = 1,
-        [FromQuery] int pageSize = 5,
-        [FromQuery] bool includeDeleted = false)
+    public IActionResult GetPaged([FromQuery] int pageNumber = 1,
+                                  [FromQuery] int pageSize = 5,
+                                  [FromQuery] bool includeDeleted = false,
+                                  [FromQuery] string? searchDescription = null,
+                                  [FromQuery] string? searchUsername = null,
+                                  [FromQuery] string? createdByUserId = null,
+                                  [FromQuery] string? sortBy = null)
     {
         try
         {
@@ -339,26 +397,57 @@ public class DeviceController : ControllerBase
             if (string.IsNullOrEmpty(userId) || string.IsNullOrEmpty(role))
                 return Unauthorized(new { message = "Invalid token: UserId or Role missing" });
 
-            // Fetch devices from service
-            var (devices, totalCount) = _deviceService.GetDevicesPagination(pageNumber, pageSize, includeDeleted);
+            var devicesQuery = _context.Devices.AsQueryable();
 
-            // Filter only for non-admin users
+            devicesQuery = includeDeleted ? devicesQuery.Where(d => d.IsDeleted) : devicesQuery.Where(d => !d.IsDeleted);
+
             if (role != "Admin")
-            {
-                devices = devices.Where(d => d.UserId == userId).ToList();
-                totalCount = devices.Count();
-            }
+                devicesQuery = devicesQuery.Where(d => d.UserId == userId);
 
-            var response = new
+            if (!string.IsNullOrEmpty(searchDescription))
+                devicesQuery = devicesQuery.Where(d => d.Description.Contains(searchDescription));
+
+            if (!string.IsNullOrEmpty(createdByUserId))
+                devicesQuery = devicesQuery.Where(d => d.UserId == createdByUserId);
+
+            // Join with users to get usernames
+            var result = from d in devicesQuery
+                         join u in _context.Users on d.UserId equals u.Id.ToString() into userJoin
+                         from user in userJoin.DefaultIfEmpty()
+                         select new
+                         {
+                             d.Id,
+                             d.DeviceName,
+                             d.Description,
+                             d.UserId,
+                             CreatedBy = user != null ? user.Username : "Unknown",
+                             d.IsDeleted
+                         };
+
+            if (!string.IsNullOrEmpty(searchUsername))
+                result = result.Where(r => r.CreatedBy.Contains(searchUsername));
+
+            result = sortBy switch
+            {
+                "usernameAsc" => result.OrderBy(r => r.CreatedBy),
+                "usernameDesc" => result.OrderByDescending(r => r.CreatedBy),
+                _ => result.OrderBy(r => r.DeviceName)
+            };
+
+            var totalCount = result.Count();
+
+            var devices = result.Skip((pageNumber - 1) * pageSize)
+                                .Take(pageSize)
+                                .ToList();
+
+            return Ok(new
             {
                 Data = devices,
                 TotalRecords = totalCount,
                 PageNumber = pageNumber,
                 PageSize = pageSize,
                 IncludeDeleted = includeDeleted
-            };
-
-            return Ok(response);
+            });
         }
         catch (Exception ex)
         {
@@ -367,51 +456,75 @@ public class DeviceController : ControllerBase
         }
     }
 
-    // GET: api/Device/notifications
-    [HttpGet("notifications")]
-    [Authorize(Roles = "Admin,User")]
-    public IActionResult GetNotifications()
+    [HttpGet("notifications/unread-count")]
+    public IActionResult GetUnreadCount()
     {
-        try
-        {
-            var userId = User.FindFirst("UserId")?.Value;
-            var role = User.FindFirst(ClaimTypes.Role)?.Value;
-
-            if (string.IsNullOrEmpty(userId))
-                return Unauthorized(new { message = "Invalid user" });
-
-            var notifications = role == "Admin"
-                ? _context.Notifications.OrderByDescending(n => n.CreatedAt).ToList()
-                : _context.Notifications.Where(n => n.UserId == userId)
-                                        .OrderByDescending(n => n.CreatedAt)
-                                        .ToList();
-
-            return Ok(notifications.Select(n => new {
-                n.Id,
-                n.Message,
-                n.CreatedAt,
-                n.IsRead
-            }));
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error fetching notifications");
-            return StatusCode(500, new { message = "Error fetching notifications" });
-        }
+        var userId = User.FindFirst("UserId")?.Value;
+        var count = _context.UserNotifications.Count(un => un.UserId == userId && !un.IsRead);
+        return Ok(new { unreadCount = count });
     }
 
-    [HttpPut("notifications/markread/{id}")]
-    [Authorize(Roles = "Admin,User")]
-    public async Task<IActionResult> MarkRead(int id)
+    [HttpPut("notifications/markallread")]
+    public async Task<IActionResult> MarkAllRead()
     {
-        var notification = await _context.Notifications.FindAsync(id);
-        if (notification == null) return NotFound();
+        var userId = User.FindFirst("UserId")?.Value;
 
-        notification.IsRead = true;
+        var unread = _context.UserNotifications
+                             .Where(un => un.UserId == userId && !un.IsRead);
+
+        foreach (var n in unread)
+        {
+            n.IsRead = true;
+            n.ReadAt = DateTime.UtcNow;
+        }
+
         await _context.SaveChangesAsync();
         return Ok();
     }
 
+    [HttpGet("notifications/paged")]
+    public IActionResult GetNotificationsPaged(int pageNumber = 1, int pageSize = 20)
+    {
+        var userId = User.FindFirst("UserId")?.Value;
+
+        var query = from un in _context.UserNotifications
+                    join n in _context.Notifications on un.NotificationId equals n.Id
+                    where un.UserId == userId
+                    orderby n.CreatedAt descending
+                    select new
+                    {
+                        un.Id,
+                        n.Message,
+                        n.CreatedAt,
+                        un.IsRead,
+                        un.ReadAt
+                    };
+
+        var totalCount = query.Count();
+        var notifications = query.Skip((pageNumber - 1) * pageSize)
+                                 .Take(pageSize)
+                                 .ToList();
+
+        return Ok(new { Data = notifications, TotalRecords = totalCount });
+    }
+
+    // POST: api/Device/calculate-average
+    [HttpPost("calculate-average")]
+    [Authorize(Roles = "Admin,User")]
+    public IActionResult CalculateAverage([FromBody] ColumnRequest request)
+    {
+        if (string.IsNullOrEmpty(request.ColumnName))
+            return BadRequest(new { message = "Column name is required" });
+
+        _queueService.Enqueue(request.ColumnName);  // Sends the column name to the background service
+        return Ok(new { message = $"{request.ColumnName} queued for calculation" });
+    }
+
+    // DTO for column name
+    public class ColumnRequest
+    {
+        public string ColumnName { get; set; }
+    }
 
 
 }

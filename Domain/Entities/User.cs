@@ -14,5 +14,6 @@ namespace DeviceManagementSolution.Domain.Entities
 
         [Required, MaxLength(20)]
         public string Role { get; set; } = "User"; // Default = User, can be Admin
+
     }
 }

@@ -24,5 +24,8 @@ namespace Application.Interfaces
 
         // Pagination (optional)
         (List<Device> Devices, int TotalCount) GetDevicesPagination(int pageNumber, int pageSize, bool includeDeleted = false);
+
+        List<Device> GetAllDevicesIncludingDeleted();
+
     }
 }

@@ -31,7 +31,7 @@ builder.Services.AddAuthentication(options =>
         ValidateAudience = true,
         ValidateLifetime = true,
         ValidateIssuerSigningKey = true,
-        ClockSkew = TimeSpan.Zero, // tokens expire exactly when they say
+        ClockSkew = TimeSpan.Zero, 
         ValidIssuer = jwtSettings["ValidIssuer"],
         ValidAudience = jwtSettings["ValidAudience"],
         IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtSettings["Secret"])),
@@ -43,7 +43,7 @@ builder.Services.AddAuthentication(options =>
     {
         OnMessageReceived = context =>
         {
-            // Normal cookie usage for APIs
+            // Check if JWT exists in cookies
             if (context.Request.Cookies.ContainsKey("jwt"))
             {
                 context.Token = context.Request.Cookies["jwt"];
@@ -61,7 +61,6 @@ builder.Services.AddAuthentication(options =>
         }
     };
 });
-
 
 // ----------------------- Controllers & Swagger -----------------------
 builder.Services.AddControllers();
@@ -100,10 +99,12 @@ builder.Services.AddDbContext<DeviceDbContext>(options =>
 
 // ----------------------- Services -----------------------
 builder.Services.AddScoped<IDeviceService, DeviceServiceEf>();
-builder.Services.AddScoped<IUserService, UserService>(); // Assuming you have this
+builder.Services.AddScoped<IUserService, UserService>(); 
 builder.Services.AddScoped<IRefreshTokenService, RefreshTokenService>();
 builder.Services.AddScoped<INotificationService, NotificationService>();
 
+builder.Services.AddSingleton<IQueueService, QueueService>();
+builder.Services.AddHostedService<CalculateBackgroundService>();
 
 // ----------------------- SignalR -----------------------
 builder.Services.AddSignalR();
@@ -113,7 +114,6 @@ builder.Services.AddSingleton<RequestCounterService>();
 builder.Services.AddTransient<RequestCounterMiddleware>();
 
 builder.Configuration.AddUserSecrets<Program>();
-
 // ----------------------- CORS -----------------------
 builder.Services.AddCors(options =>
 {
@@ -149,9 +149,6 @@ using (var scope = app.Services.CreateScope())
 {
     var context = scope.ServiceProvider.GetRequiredService<DeviceDbContext>();
 
-    // Apply pending migrations automatically
-   //  context.Database.Migrate(); 
-
     // Check if Admin exists
     if (!context.Users.Any(u => u.Role == "Admin"))
     {
@@ -159,7 +156,7 @@ using (var scope = app.Services.CreateScope())
         {
             Username = "admin",
             Role = "Admin",
-            PasswordHash = BCrypt.Net.BCrypt.HashPassword("Admin@123") // match login logic
+            PasswordHash = BCrypt.Net.BCrypt.HashPassword("Admin@123") 
         };
         context.Users.Add(admin);
         context.SaveChanges();
@@ -172,5 +169,4 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
-// ----------------------- Run App -----------------------
 app.Run();

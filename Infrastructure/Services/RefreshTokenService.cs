@@ -43,13 +43,11 @@ namespace Infrastructure.Services
 
             return refreshToken;
         }
-
         public async Task RevokeAsync(RefreshToken token)
         {
             token.Revoked = DateTime.UtcNow;
             await _context.SaveChangesAsync();
         }
-
         public async Task RevokeByTokenAsync(string token)
         {
             var existing = await GetByTokenAsync(token);
