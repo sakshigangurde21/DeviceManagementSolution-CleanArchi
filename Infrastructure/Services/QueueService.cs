@@ -7,10 +7,8 @@ namespace Infrastructure.Services
     {
         private readonly ConcurrentQueue<string> _queue = new();
 
-        // Hardcoded to only work with "Temperature"
-        public void Enqueue()
+        public void Enqueue(string columnName)
         {
-            string columnName = "Temperature"; // always this column
             Console.WriteLine($"{columnName} added to queue");
             _queue.Enqueue(columnName);
         }

@@ -9,18 +9,15 @@ namespace Infrastructure.Services
 {
     public class CalculateBackgroundService : BackgroundService
     {
-        private readonly INotificationService _notificationService;
         private readonly IQueueService _queueService;
         private readonly IServiceScopeFactory _scopeFactory;
         private readonly ILogger<CalculateBackgroundService> _logger;
 
         public CalculateBackgroundService(
-            INotificationService notificationService,
             IQueueService queueService,
             IServiceScopeFactory scopeFactory,
             ILogger<CalculateBackgroundService> logger)
         {
-            _notificationService = notificationService;
             _queueService = queueService;
             _scopeFactory = scopeFactory;
             _logger = logger;
@@ -36,22 +33,24 @@ namespace Infrastructure.Services
                 {
                     if (_queueService.TryDequeue(out string columnName))
                     {
+                        using var scope = _scopeFactory.CreateScope();
+
+                        // Resolve scoped services within scope
+                        var dbContext = scope.ServiceProvider.GetRequiredService<DeviceDbContext>();
+                        var notificationService = scope.ServiceProvider.GetRequiredService<INotificationService>();
+
                         if (columnName.ToLower() != "temperature")
                         {
                             _logger.LogWarning($"Unknown column: {columnName}");
                             continue;
                         }
 
-                        using var scope = _scopeFactory.CreateScope();
-                        var dbContext = scope.ServiceProvider.GetRequiredService<DeviceDbContext>();
-
-                        // Query the dummy table for average
                         double avgTemp = await dbContext.DeviceStatsDummy
                             .AverageAsync(d => d.Temperature, stoppingToken);
 
                         _logger.LogInformation($"Average Temperature: {avgTemp}");
 
-                        await _notificationService.SendAverageToClients("Temperature", avgTemp);
+                        await notificationService.SendAverageToClients("Temperature", avgTemp);
                     }
                     else
                     {
@@ -67,6 +66,5 @@ namespace Infrastructure.Services
 
             _logger.LogInformation("Background calculation service stopped.");
         }
-
     }
 }

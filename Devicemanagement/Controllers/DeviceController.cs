@@ -167,23 +167,35 @@ public class DeviceController : ControllerBase
                 UserId = device.UserId
             });
 
-            // ✅ Create notification for this user
-            var notification = new Notification { Message = $"Added device \"{device.DeviceName}\"" };
+
+            // ✅ CREATE NOTIFICATION FOR ALL USERS
+            var notification = new Notification
+            {
+                Message = $"{User.Identity?.Name} added device \"{device.DeviceName}\""
+            };
             _context.Notifications.Add(notification);
             await _context.SaveChangesAsync();
 
-            _context.UserNotifications.Add(new UserNotification
+            // ✅ Get ALL users and create UserNotification for each
+            var allUsers = await _context.Users.ToListAsync();
+            foreach (var user in allUsers)
             {
-                UserId = userId,
-                NotificationId = notification.Id
-            });
+                _context.UserNotifications.Add(new UserNotification
+                {
+                    UserId = user.Id.ToString(),
+                    NotificationId = notification.Id,
+                    IsRead = false
+                });
+            }
             await _context.SaveChangesAsync();
 
-            await _hubContext.Clients.User(userId).SendAsync("NewNotification", new
+            // ✅ Send SignalR notification to ALL connected clients
+            await _hubContext.Clients.All.SendAsync("NewNotification", new
             {
-                notification.Id,
-                notification.Message,
-                notification.CreatedAt
+                id = notification.Id,
+                message = notification.Message,
+                createdAt = notification.CreatedAt,
+                isRead = false
             });
 
             return CreatedAtAction(nameof(GetById), new { id = device.Id }, device);
@@ -231,23 +243,34 @@ public class DeviceController : ControllerBase
                 UserId = device.UserId
             });
 
-            // Notification
-            var notification = new Notification { Message = $"{User.Identity?.Name} updated device \"{device.DeviceName}\"" };
+            // ✅ CREATE NOTIFICATION FOR ALL USERS
+            var notification = new Notification
+            {
+                Message = $"{User.Identity?.Name} updated device \"{device.DeviceName}\""
+            };
             _context.Notifications.Add(notification);
             await _context.SaveChangesAsync();
 
-            _context.UserNotifications.Add(new UserNotification
+            // ✅ Get ALL users
+            var allUsers = await _context.Users.ToListAsync();
+            foreach (var user in allUsers)
             {
-                UserId = userId,
-                NotificationId = notification.Id
-            });
+                _context.UserNotifications.Add(new UserNotification
+                {
+                    UserId = user.Id.ToString(),
+                    NotificationId = notification.Id,
+                    IsRead = false
+                });
+            }
             await _context.SaveChangesAsync();
 
-            await _hubContext.Clients.User(userId).SendAsync("NewNotification", new
+            // ✅ Send to ALL clients
+            await _hubContext.Clients.All.SendAsync("NewNotification", new
             {
-                notification.Id,
-                notification.Message,
-                notification.CreatedAt
+                id = notification.Id,
+                message = notification.Message,
+                createdAt = notification.CreatedAt,
+                isRead = false
             });
 
             return Ok(new { message = $"Device {id} updated successfully" });
@@ -265,6 +288,11 @@ public class DeviceController : ControllerBase
     {
         try
         {
+            var device = await _context.Devices.FindAsync(id);
+            if (device == null) return NotFound(new { message = $"Device {id} not found" });
+
+            var deviceName = device.DeviceName; // Store name before deletion
+
             bool success = _deviceService.SoftDeleteDevice(id);
             if (!success) return NotFound(new { message = $"Device {id} not found" });
 
@@ -273,17 +301,35 @@ public class DeviceController : ControllerBase
                 DeviceId = id,
                 Message = "Device deleted"
             });
-
-            var notification = new Notification { Message = $"{User.Identity?.Name} deleted device {id}" };
+            // ✅ CREATE NOTIFICATION FOR ALL USERS
+            var notification = new Notification
+            {
+                Message = $"{User.Identity?.Name} deleted device \"{device.DeviceName}\""
+            };
             _context.Notifications.Add(notification);
             await _context.SaveChangesAsync();
 
-            _context.UserNotifications.Add(new UserNotification
+            // ✅ Get ALL users
+            var allUsers = await _context.Users.ToListAsync();
+            foreach (var user in allUsers)
             {
-                UserId = User.FindFirst("UserId")?.Value ?? "",
-                NotificationId = notification.Id
-            });
+                _context.UserNotifications.Add(new UserNotification
+                {
+                    UserId = user.Id.ToString(),
+                    NotificationId = notification.Id,
+                    IsRead = false
+                });
+            }
             await _context.SaveChangesAsync();
+
+            // ✅ Send to ALL clients
+            await _hubContext.Clients.All.SendAsync("NewNotification", new
+            {
+                id = notification.Id,
+                message = notification.Message,
+                createdAt = notification.CreatedAt,
+                isRead = false
+            });
 
             return Ok(new { message = $"Device {id} deleted successfully" });
         }
@@ -295,7 +341,6 @@ public class DeviceController : ControllerBase
     }
 
 
-    // PUT: api/Device/restore/{id}  --> RESTORE or UNDO
     // PUT: api/Device/restore/{id}  --> RESTORE or UNDO
     [HttpPut("restore/{id}")]
     [Authorize(Roles = "Admin,User")]
@@ -321,10 +366,33 @@ public class DeviceController : ControllerBase
                 Message = $"Device \"{device.DeviceName}\" restored successfully."
             });
 
-            // Use NotificationService for per-user notification
-            await _notificationService.CreateNotificationAsync(device.UserId,
-                $"{User.Identity?.Name} restored device \"{device.DeviceName}\"");
+            // CREATE NOTIFICATION FOR ALL USERS
+            var notification = new Notification
+            {
+                Message = $"{User.Identity?.Name} restored device \"{device.DeviceName}\""
+            };
+            _context.Notifications.Add(notification);
+            await _context.SaveChangesAsync();
 
+            var allUsers = await _context.Users.ToListAsync();
+            foreach (var user in allUsers)
+            {
+                _context.UserNotifications.Add(new UserNotification
+                {
+                    UserId = user.Id.ToString(),
+                    NotificationId = notification.Id,
+                    IsRead = false
+                });
+            }
+            await _context.SaveChangesAsync();
+
+            await _hubContext.Clients.All.SendAsync("NewNotification", new
+            {
+                id = notification.Id,
+                message = notification.Message,
+                createdAt = notification.CreatedAt,
+                isRead = false
+            });
             return Ok(new { message = $"Device with ID {id} restored successfully." });
         }
         catch (Exception ex)
@@ -336,7 +404,7 @@ public class DeviceController : ControllerBase
 
     // PUT: api/Device/restoreAll  --> RESTORE ALL
     [HttpPut("restoreAll")]
-    [Authorize(Roles = "Admin")] // Only Admin can restore all
+    [Authorize(Roles = "Admin")] 
     public async Task<IActionResult> RestoreAllDeletedDevices()
     {
         try
@@ -358,7 +426,7 @@ public class DeviceController : ControllerBase
 
     // DELETE: api/Device/permanent/{id}  --> PERMANENT DELETE
     [HttpDelete("permanent/{id}")]
-    [Authorize(Roles = "Admin")] // Only Admin can permanently delete
+    [Authorize(Roles = "Admin")] 
     public async Task<IActionResult> DeletePermanent(int id)
     {
         try
@@ -377,7 +445,7 @@ public class DeviceController : ControllerBase
             return StatusCode(500, new { message = "Unexpected error while permanently deleting device." });
         }
     }
-    // GET: api/Device/paged?pageNumber=1&pageSize=10
+
     // GET paged: api/Device/paged?pageNumber=1&pageSize=5
     [HttpGet("paged")]
     [Authorize(Roles = "Admin,User")]
@@ -456,12 +524,45 @@ public class DeviceController : ControllerBase
         }
     }
 
+    [HttpGet("notifications")]
+    [Authorize(Roles = "Admin,User")]
+    public async Task<IActionResult> GetAllNotifications()
+    {
+        var userId = User.FindFirst("UserId")?.Value;
+
+        var notifications = await _context.UserNotifications
+            .Include(un => un.Notification)
+            .Where(un => un.UserId == userId)
+            .OrderByDescending(un => un.Notification.CreatedAt)
+            .Take(10)  //  Limit to latest 10
+            .Select(un => new
+            {
+                id = un.Id,  // 
+                message = un.Notification.Message,  // ✅ lowercase
+                createdAt = un.Notification.CreatedAt,  // ✅ lowercase
+                isRead = un.IsRead,  // ✅ lowercase
+                readAt = un.ReadAt
+            })
+            .ToListAsync();
+
+        return Ok(notifications);
+    }
+
+
     [HttpGet("notifications/unread-count")]
     public IActionResult GetUnreadCount()
     {
         var userId = User.FindFirst("UserId")?.Value;
         var count = _context.UserNotifications.Count(un => un.UserId == userId && !un.IsRead);
-        return Ok(new { unreadCount = count });
+        return Ok(new { count = count });
+    }
+
+    [HttpPut("notifications/markread/{userNotificationId}")]
+    public async Task<IActionResult> MarkNotificationAsRead(int userNotificationId)
+    {
+        var success = await _notificationService.MarkAsReadAsync(userNotificationId);
+        if (!success) return NotFound(new { message = "Notification not found" });
+        return Ok(new { message = "Marked as read" });
     }
 
     [HttpPut("notifications/markallread")]
